@@ -26,6 +26,65 @@ function stripAudio(submissions: Record<string, unknown>[]) {
   });
 }
 
+/** Extract audio fields from a payload, return { text, audio } */
+function splitAudio(payload: Record<string, unknown>): {
+  text: Record<string, unknown>;
+  audio: Record<string, string>;
+} {
+  const text: Record<string, unknown> = {};
+  const audio: Record<string, string> = {};
+  for (const [k, v] of Object.entries(payload)) {
+    if (k.endsWith("_audio") && typeof v === "string") {
+      audio[k] = v;
+    } else {
+      text[k] = v;
+    }
+  }
+  return { text, audio };
+}
+
+/** Upload a single audio file to GitHub data/audio/ */
+async function uploadAudioFile(
+  userName: string,
+  key: string,
+  content: string,
+): Promise<boolean> {
+  const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  const safeName = String(userName).replace(/[^a-zA-Z0-9\u4e00-\u9fff]/g, "_").slice(0, 20);
+  const filePath = `data/audio/${safeName}_${key}_${ts}.txt`;
+  const audioApi = `https://api.github.com/repos/${OWNER}/${REPO}/contents/${filePath}`;
+
+  // Check if file exists (for SHA)
+  let sha = "";
+  try {
+    const checkResp = await fetch(audioApi, {
+      headers: { Authorization: `Bearer ${GH_TOKEN}`, Accept: "application/vnd.github.v3+json" },
+    });
+    if (checkResp.ok) {
+      const checkData = await checkResp.json();
+      sha = checkData.sha || "";
+    }
+  } catch { /* file doesn't exist, that's fine */ }
+
+  const body: Record<string, string> = {
+    message: `🎤 ${userName} - ${key}`,
+    content: utf8ToB64(content),
+    branch: "main",
+  };
+  if (sha) body.sha = sha;
+
+  const putResp = await fetch(audioApi, {
+    method: "PUT",
+    headers: {
+      Authorization: `Bearer ${GH_TOKEN}`,
+      Accept: "application/vnd.github.v3+json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  return putResp.ok;
+}
+
 Deno.serve(async (req) => {
   const url = new URL(req.url);
   const path = url.pathname;
@@ -148,7 +207,18 @@ Deno.serve(async (req) => {
 
   try {
     const payload = await req.json();
+    const userName = String(payload.userName || payload.name || "?");
 
+    // Split audio from text — audio stored as separate small files
+    const { text, audio } = splitAudio(payload);
+
+    // Upload audio files in parallel (non-blocking for submission)
+    const audioUploads: Promise<boolean>[] = [];
+    for (const [key, content] of Object.entries(audio)) {
+      audioUploads.push(uploadAudioFile(userName, key, content));
+    }
+
+    // Update submissions.json with text-only payload
     const getResp = await fetch(API, {
       headers: { Authorization: `Bearer ${GH_TOKEN}`, Accept: "application/vnd.github.v3+json" },
     });
@@ -158,7 +228,7 @@ Deno.serve(async (req) => {
       : [];
     const sha = data.sha;
 
-    submissions.push({ ...payload, _received: new Date().toISOString() });
+    submissions.push({ ...text, _received: new Date().toISOString(), _audio_saved: Object.keys(audio).length });
 
     const encoded = utf8ToB64(JSON.stringify(submissions, null, 2));
 
@@ -170,7 +240,7 @@ Deno.serve(async (req) => {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        message: `📝 ${payload.userName || payload.name || "?"} (${new Date().toISOString().slice(0, 10)})`,
+        message: `📝 ${userName} (${new Date().toISOString().slice(0, 10)})`,
         content: encoded,
         sha,
         branch: "main",
@@ -178,8 +248,12 @@ Deno.serve(async (req) => {
     });
     const result = await putResp.json();
 
+    // Wait for audio uploads to complete
+    const audioResults = await Promise.allSettled(audioUploads);
+    const audioOk = audioResults.filter((r) => r.status === "fulfilled" && r.value).length;
+
     return new Response(
-      JSON.stringify({ success: !!result.content, count: submissions.length }),
+      JSON.stringify({ success: !!result.content, count: submissions.length, audio_saved: audioOk }),
       { headers: { ...headers, "Content-Type": "application/json" } },
     );
   } catch (e: unknown) {
