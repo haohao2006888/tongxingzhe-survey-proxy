@@ -1,0 +1,9 @@
+{
+  "buildCommand": "echo 'Deno project, no build needed'",
+  "functions": {
+    "api/**/*.ts": {
+      "runtime": "deno"
+    }
+  },
+  "rewrites": [{ "source": "/(.*)", "destination": "/api/index" }]
+}
