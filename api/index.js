@@ -69,14 +69,14 @@ module.exports = async function handler(req, res) {
         return;
       }
 
-      const { audio, format, rate, lang } = body;
+      const { audio, format, rate, lang, dev_pid } = body;
 
       if (!audio) {
         res.status(400).json({ error: "Missing audio data" });
         return;
       }
 
-      console.log("STT request: audio_len=" + audio.length + ", format=" + format + ", rate=" + rate + ", lang=" + lang);
+      console.log("STT request: audio_len=" + audio.length + ", format=" + format + ", rate=" + rate + ", lang=" + lang + ", dev_pid=" + (dev_pid || "default"));
 
       const token = await getBaiduToken();
       if (!token) {
@@ -84,8 +84,8 @@ module.exports = async function handler(req, res) {
         return;
       }
 
-      // dev_pid: 1537=Mandarin, 1737=English
-      const devPid = lang === "en" ? 1737 : 1537;
+      // dev_pid: client-specified or auto-detect (1537=Mandarin+punctuation, 1737=English)
+      var devPid = dev_pid ? Number(dev_pid) : (lang === "en" ? 1737 : 1537);
       const cuid = "proxy-" + Date.now();
       const params = new URLSearchParams({ cuid, token, dev_pid: String(devPid) });
 
